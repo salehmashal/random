@@ -49,7 +49,7 @@ def generate_migration_plan(policy_data, policy_usage):
                 'new_name': f"{policy_name}_env",
                 'type': 'PopulateCache',
                 'cache_resource': 'environmental_cache',  # Replace with actual resource name
-                'usage': policy_usage.get(policy_name, [])
+                'usage_contexts': [usage['context'] for usage in policy_usage.get(policy_name, [])]
             }
             migration_plan.append(new_populate_policy)
 
@@ -61,12 +61,11 @@ def generate_migration_plan(policy_data, policy_usage):
                         'new_name': f"{lookup_name}_env",
                         'type': 'LookupCache',
                         'cache_resource': 'environmental_cache',  # Replace with actual resource name
-                        'usage': policy_usage.get(lookup_name, [])
+                        'usage_contexts': [usage['context'] for usage in policy_usage.get(lookup_name, [])]
                     }
                     migration_plan.append(new_lookup_policy)
-
     return migration_plan
-
+    
 def create_new_policy_file(policy_info, policies_dir):
     """Create a new policy XML file with environmental cache resource."""
     original_file_path = os.path.join(policies_dir, f"{policy_info['original_name']}.xml")
@@ -104,12 +103,10 @@ def apply_migration_plan(migration_plan, policies_dir, proxies_dir):
         create_new_policy_file(policy_info, policies_dir)
 
         # Update proxy configurations
-        for usage in policy_info['usage']:
-            context = usage['context'].split(' ')[0]
-            if context in ['ProxyEndpoint', 'TargetEndpoint']:
-                proxy_name = usage['context'].split('(')[1].rstrip(')')
-                proxy_file = os.path.join(proxies_dir, f"{proxy_name}.xml")
-                update_proxy_configuration(proxy_file, policy_info)
+        for context in policy_info['usage_contexts']:
+            proxy_or_target, proxy_name = context.split(' ')[0], context.split('(')[1].rstrip(')')
+            proxy_file_path = os.path.join(proxies_dir, f"{proxy_name}.xml")
+            update_proxy_configuration(proxy_file_path, policy_info)
 
 def main():
     policies_dir = "path/to/apigee/policies"
