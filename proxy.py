@@ -84,24 +84,21 @@ def update_proxy_configuration(proxy_file, policy_info, is_lookup_policy=False):
     tree = ET.parse(proxy_file)
     root = tree.getroot()
 
-    for step in root.findall('.//Step'):
-        policy_name_element = step.find('Name')
-        if policy_name_element is not None and policy_name_element.text == policy_info['original_name']:
-            if is_lookup_policy:
-                # For LookupCache policies, add new policy next to the old one
-                new_step = ET.Element('Step')
-                new_name = ET.SubElement(new_step, 'Name')
-                new_name.text = policy_info['new_name']
+    for parent in root.iter():
+        for index, step in enumerate(parent):
+            policy_name_element = step.find('Name')
+            if policy_name_element is not None and policy_name_element.text == policy_info['original_name']:
+                if is_lookup_policy:
+                    # For LookupCache policies, add new policy next to the old one
+                    new_step = ET.Element('Step')
+                    new_name = ET.SubElement(new_step, 'Name')
+                    new_name.text = policy_info['new_name']
 
-                # Find the parent element and the index of the current step
-                parent = step.getparent()
-                index = list(parent).index(step)
-
-                # Insert the new step right after the current step
-                parent.insert(index + 1, new_step)
-            else:
-                # For PopulateCache policies, replace the old policy with the new policy
-                policy_name_element.text = policy_info['new_name']
+                    # Insert the new step right after the current step
+                    parent.insert(index + 1, new_step)
+                else:
+                    # For PopulateCache policies, replace the old policy with the new policy
+                    policy_name_element.text = policy_info['new_name']
 
     # Update conditions referencing the old policy name
     for condition in root.findall('.//Condition'):
