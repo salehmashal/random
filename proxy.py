@@ -79,19 +79,43 @@ def create_new_policy_file(policy_info, policies_dir):
 
     tree.write(new_file_path)
 
-def update_proxy_configuration(proxy_file, policy_info):
-    """Update proxy configuration to include the new policy."""
+def update_proxy_configuration(proxy_file, policy_info, is_lookup_policy=False):
+    """Update proxy configuration for LookupCache and PopulateCache policies and update conditions."""
     tree = ET.parse(proxy_file)
     root = tree.getroot()
 
-    for step in root.findall('.//Step'):
-        if step.find('Name').text == policy_info['original_name']:
-            new_step = ET.Element('Step')
-            new_name = ET.SubElement(new_step, 'Name')
-            new_name.text = policy_info['new_name']
-            step.addnext(new_step)
+    if not is_lookup_policy:
+        # For PopulateCache policies, replace the old policy with the new policy
+        for step in root.findall('.//Step'):
+            policy_name_element = step.find('Name')
+            if policy_name_element is not None and policy_name_element.text == policy_info['original_name']:
+                policy_name_element.text = policy_info['new_name']
+    else:
+        # For LookupCache policies, add new policy next to the old one
+        for step in root.findall('.//Step'):
+            policy_name_element = step.find('Name')
+            if policy_name_element is not None and policy_name_element.text == policy_info['original_name']:
+                new_step = ET.Element('Step')
+                new_name = ET.SubElement(new_step, 'Name')
+                new_name.text = policy_info['new_name']
+                step.addnext(new_step)
+
+    # Update conditions referencing the old policy name
+    for condition in root.findall('.//Condition'):
+        if policy_info['original_name'] in condition.text:
+            new_condition = f"({condition.text}) or ({condition.text.replace(policy_info['original_name'], policy_info['new_name'])})"
+            condition.text = new_condition
 
     tree.write(proxy_file)
+
+def delete_old_policy_files(policies_dir, migration_plan):
+    """Delete old PopulateCache policy files."""
+    for policy_info in migration_plan:
+        if policy_info['type'] == 'PopulateCache':
+            old_file_path = os.path.join(policies_dir, f"{policy_info['original_name']}.xml")
+            if os.path.exists(old_file_path):
+                os.remove(old_file_path)
+                print(f"Deleted old policy file: {old_file_path}")
 
 def apply_migration_plan(migration_plan, policies_dir, proxies_dir):
     """Apply the migration plan to Apigee proxy configurations."""
@@ -100,7 +124,9 @@ def apply_migration_plan(migration_plan, policies_dir, proxies_dir):
 
         for proxy_file in policy_info['proxy_files']:
             proxy_file_path = os.path.join(proxies_dir, proxy_file)
-            update_proxy_configuration(proxy_file_path, policy_info)
+            update_proxy_configuration(proxy_file_path, policy_info, policy_info['type'] == 'LookupCache')
+
+    delete_old_policy_files(policies_dir, migration_plan)
 
 def main():
     policies_dir = input("Enter the path to your Apigee policies directory: ")
