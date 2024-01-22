@@ -84,28 +84,26 @@ def update_proxy_configuration(proxy_file, policy_info, is_lookup_policy=False):
     tree = ET.parse(proxy_file)
     root = tree.getroot()
 
-    updated_steps = set()  # Keep track of steps that have been updated
+    for flow in root.findall('.//Flow'):
+        # Tracking if the new policy has been added or replaced in this flow
+        policy_updated = False
 
-    for parent in root.iter():
-        for index, step in enumerate(list(parent)):
+        for index, step in enumerate(list(flow)):
             policy_name_element = step.find('Name')
-            if (policy_name_element is not None and 
-                policy_name_element.text == policy_info['original_name'] and 
-                step not in updated_steps):
-
-                if is_lookup_policy:
+            if policy_name_element is not None and policy_name_element.text == policy_info['original_name']:
+                if is_lookup_policy and not policy_updated:
                     # For LookupCache policies, add new policy next to the old one
                     new_step = ET.Element('Step')
                     new_name = ET.SubElement(new_step, 'Name')
                     new_name.text = policy_info['new_name']
 
                     # Insert the new step right after the current step
-                    parent.insert(index + 1, new_step)
-                else:
+                    flow.insert(index + 1, new_step)
+                    policy_updated = True
+                elif not is_lookup_policy:
                     # For PopulateCache policies, replace the old policy with the new policy
                     policy_name_element.text = policy_info['new_name']
-
-                updated_steps.add(step)  # Mark this step as updated
+                    policy_updated = True
 
     # Update conditions referencing the old policy name
     for condition in root.findall('.//Condition'):
@@ -114,6 +112,7 @@ def update_proxy_configuration(proxy_file, policy_info, is_lookup_policy=False):
             condition.text = new_condition
 
     tree.write(proxy_file)
+
 
 
 
