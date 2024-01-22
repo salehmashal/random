@@ -84,10 +84,15 @@ def update_proxy_configuration(proxy_file, policy_info, is_lookup_policy=False):
     tree = ET.parse(proxy_file)
     root = tree.getroot()
 
+    updated_steps = set()  # Keep track of steps that have been updated
+
     for parent in root.iter():
-        for index, step in enumerate(parent):
+        for index, step in enumerate(list(parent)):
             policy_name_element = step.find('Name')
-            if policy_name_element is not None and policy_name_element.text == policy_info['original_name']:
+            if (policy_name_element is not None and 
+                policy_name_element.text == policy_info['original_name'] and 
+                step not in updated_steps):
+
                 if is_lookup_policy:
                     # For LookupCache policies, add new policy next to the old one
                     new_step = ET.Element('Step')
@@ -100,6 +105,8 @@ def update_proxy_configuration(proxy_file, policy_info, is_lookup_policy=False):
                     # For PopulateCache policies, replace the old policy with the new policy
                     policy_name_element.text = policy_info['new_name']
 
+                updated_steps.add(step)  # Mark this step as updated
+
     # Update conditions referencing the old policy name
     for condition in root.findall('.//Condition'):
         if policy_info['original_name'] in condition.text:
@@ -107,6 +114,7 @@ def update_proxy_configuration(proxy_file, policy_info, is_lookup_policy=False):
             condition.text = new_condition
 
     tree.write(proxy_file)
+
 
 
 def delete_old_policy_files(policies_dir, migration_plan):
