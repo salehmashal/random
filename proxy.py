@@ -14,7 +14,7 @@ def parse_policy(file_path):
     }
 
 def analyze_proxy(directory, policy_names):
-    """Analyze proxy configurations to find where each policy is used."""
+    """Analyze proxy configurations to find where each policy is used, including the flow and file."""
     policy_usage = {name: [] for name in policy_names}
 
     for filename in os.listdir(directory):
@@ -29,39 +29,46 @@ def analyze_proxy(directory, policy_names):
                     for step in flow.findall('.//Step'):
                         policy_name = step.find('Name').text
                         if policy_name in policy_names:
-                            context = f"{root.tag} ({flow_name})"
-                            policy_usage[policy_name].append({'context': context})
+                            usage_context = {'file': filename, 'flow': flow_name}
+                            policy_usage[policy_name].append(usage_context)
             except ET.ParseError as e:
                 print(f"Error parsing file {file_path}: {e}")
 
     return policy_usage
 
 def generate_migration_plan(policy_data, policy_usage, new_policy_prefix, env_cache_resource):
-    """Generate a migration plan for cache policies."""
+    """Generate a migration plan for cache policies, considering policies in the same flow."""
     migration_plan = []
 
     for policy_name, policy_info in policy_data.items():
         if policy_info['type'] == 'PopulateCache' and not policy_info['cache_resource']:
             new_name = f"{new_policy_prefix}{policy_name}"
+            populate_proxy_files = {usage['file'] for usage in policy_usage.get(policy_name, [])}
+            populate_flows = {usage['flow'] for usage in policy_usage.get(policy_name, [])}
+
             new_populate_policy = {
                 'original_name': policy_name,
                 'new_name': new_name,
                 'type': 'PopulateCache',
                 'cache_resource': env_cache_resource,
-                'proxy_files': [usage['context'].split('(')[1].rstrip(')') + '.xml' for usage in policy_usage.get(policy_name, [])]
+                'proxy_files': list(populate_proxy_files)
             }
             migration_plan.append(new_populate_policy)
 
             for lookup_name, lookup_info in policy_data.items():
                 if lookup_info['type'] == 'LookupCache' and lookup_info['cache_key'] == policy_info['cache_key']:
-                    new_lookup_policy = {
-                        'original_name': lookup_name,
-                        'new_name': f"{new_policy_prefix}{lookup_name}",
-                        'type': 'LookupCache',
-                        'cache_resource': env_cache_resource,
-                        'proxy_files': [usage['context'].split('(')[1].rstrip(')') + '.xml' for usage in policy_usage.get(lookup_name, [])]
-                    }
-                    migration_plan.append(new_lookup_policy)
+                    lookup_proxy_files_flows = {(usage['file'], usage['flow']) for usage in policy_usage.get(lookup_name, [])}
+                    intersecting_files_flows = {(file, flow) for file, flow in lookup_proxy_files_flows if file in populate_proxy_files and flow in populate_flows}
+
+                    if intersecting_files_flows:
+                        new_lookup_policy = {
+                            'original_name': lookup_name,
+                            'new_name': f"{new_policy_prefix}{lookup_name}",
+                            'type': 'LookupCache',
+                            'cache_resource': env_cache_resource,
+                            'proxy_files_flows': intersecting_files_flows
+                        }
+                        migration_plan.append(new_lookup_policy)
 
     return migration_plan
 
@@ -79,62 +86,63 @@ def create_new_policy_file(policy_info, policies_dir):
 
     tree.write(new_file_path)
 
+def add_or_update_policy_in_flow(flow, policy_info, is_lookup_policy):
+    """Add or update a policy within a given flow."""
+    step_updated = False
+    for step in flow.findall('.//Step'):
+        policy_name_element = step.find('Name')
+        if policy_name_element is not None and policy_name_element.text == policy_info['original_name']:
+            if is_lookup_policy and not step_updated:
+                new_step = ET.Element('Step')
+                new_name = ET.SubElement(new_step, 'Name')
+                new_name.text = policy_info['new_name']
+                flow.insert(flow.index(step) + 1, new_step)
+                step_updated = True
+            elif not is_lookup_policy:
+                policy_name_element.text = policy_info['new_name']
+                step_updated = True
+
+def update_conditions(root, policy_info):
+    """Update conditions in the proxy configuration."""
+    for condition in root.findall('.//Condition'):
+        if policy_info['original_name'] in condition.text:
+            condition.text = condition.text.replace(policy_info['original_name'], policy_info['new_name'])
+
 def update_proxy_configuration(proxy_file, policy_info, is_lookup_policy=False):
     """Update proxy configuration for LookupCache and PopulateCache policies and update conditions."""
     tree = ET.parse(proxy_file)
     root = tree.getroot()
 
-    for flow in root.findall('.//Flow'):
-        # Tracking if the new policy has been added or replaced in this flow
-        policy_updated = False
+    if 'proxy_files_flows' in policy_info:
+        # Handle LookupCache policy update
+        for file_flow in policy_info['proxy_files_flows']:
+            if file_flow[0] == proxy_file:
+                for flow in root.findall(f".//Flow[@name='{file_flow[1]}']"):
+                    add_or_update_policy_in_flow(flow, policy_info, is_lookup_policy)
+    else:
+        # Handle PopulateCache policy update
+        for flow in root.findall('.//Flow'):
+            add_or_update_policy_in_flow(flow, policy_info, is_lookup_policy)
 
-        for index, step in enumerate(list(flow)):
-            policy_name_element = step.find('Name')
-            if policy_name_element is not None and policy_name_element.text == policy_info['original_name']:
-                if is_lookup_policy and not policy_updated:
-                    # For LookupCache policies, add new policy next to the old one
-                    new_step = ET.Element('Step')
-                    new_name = ET.SubElement(new_step, 'Name')
-                    new_name.text = policy_info['new_name']
-
-                    # Insert the new step right after the current step
-                    flow.insert(index + 1, new_step)
-                    policy_updated = True
-                elif not is_lookup_policy:
-                    # For PopulateCache policies, replace the old policy with the new policy
-                    policy_name_element.text = policy_info['new_name']
-                    policy_updated = True
-
-    # Update conditions referencing the old policy name
-    for condition in root.findall('.//Condition'):
-        if policy_info['original_name'] in condition.text:
-            new_condition = f"({condition.text}) or ({condition.text.replace(policy_info['original_name'], policy_info['new_name'])})"
-            condition.text = new_condition
+    update_conditions(root, policy_info)
 
     tree.write(proxy_file)
-
-
-
-
-def delete_old_policy_files(policies_dir, migration_plan):
-    """Delete old PopulateCache policy files."""
-    for policy_info in migration_plan:
-        if policy_info['type'] == 'PopulateCache':
-            old_file_path = os.path.join(policies_dir, f"{policy_info['original_name']}.xml")
-            if os.path.exists(old_file_path):
-                os.remove(old_file_path)
-                print(f"Deleted old policy file: {old_file_path}")
 
 def apply_migration_plan(migration_plan, policies_dir, proxies_dir):
     """Apply the migration plan to Apigee proxy configurations."""
     for policy_info in migration_plan:
         create_new_policy_file(policy_info, policies_dir)
 
-        for proxy_file in policy_info['proxy_files']:
-            proxy_file_path = os.path.join(proxies_dir, proxy_file)
-            update_proxy_configuration(proxy_file_path, policy_info, policy_info['type'] == 'LookupCache')
+        if 'proxy_files_flows' in policy_info:
+            for file_flow in policy_info['proxy_files_flows']:
+                proxy_file_path = os.path.join(proxies_dir, file_flow[0])
+                update_proxy_configuration(proxy_file_path, policy_info, policy_info['type'] == 'LookupCache')
+        else:
+            for proxy_file in policy_info['proxy_files']:
+                proxy_file_path = os.path.join(proxies_dir, proxy_file)
+                update_proxy_configuration(proxy_file_path, policy_info, policy_info['type'] == 'LookupCache')
 
-    delete_old_policy_files(policies_dir, migration_plan)
+    print("Migration plan applied to Apigee proxy configurations.")
 
 def main():
     policies_dir = input("Enter the path to your Apigee policies directory: ")
@@ -156,8 +164,6 @@ def main():
     shutil.copytree(proxies_dir, f"{proxies_dir}_backup")
 
     apply_migration_plan(migration_plan, policies_dir, proxies_dir)
-
-    print("Migration plan applied to Apigee proxy configurations.")
 
 if __name__ == "__main__":
     main()
